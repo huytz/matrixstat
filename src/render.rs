@@ -38,6 +38,23 @@ pub fn bytes_short(n: u64) -> String {
     }
 }
 
+/// Bytes/s as a fixed-MB number, always 4 chars: "0.01", "12.3", " 123".
+pub fn mb(n: u64) -> String {
+    let v = n as f64 / (1024.0 * 1024.0);
+    if v < 10.0 {
+        format!("{v:.2}")
+    } else if v < 100.0 {
+        format!("{v:.1}")
+    } else {
+        format!("{v:>4.0}")
+    }
+}
+
+/// Throughput always in MB/s like "0.01 MB/s" so the unit never flips.
+pub fn rate(n: u64) -> String {
+    format!("{} MB/s", mb(n))
+}
+
 /// Text bar of `cells` block characters filled to `pct` percent.
 pub fn bar(pct: f32, cells: usize) -> String {
     let filled = ((pct.clamp(0.0, 100.0) / 100.0) * cells as f32).round() as usize;
@@ -204,6 +221,40 @@ pub fn graph_stacked(
     c
 }
 
+/// Graph never scales below 10 KB/s so idle noise stays flat.
+const NET_FLOOR: f32 = 10.0 * 1024.0;
+
+/// Mirrored throughput history: download grows up, upload down, from a shared midline.
+pub fn graph_updown(
+    hist: &[[f32; 2]],
+    slots: usize,
+    w_pt: u32,
+    h_pt: u32,
+    rgbs: [[u8; 3]; 2],
+) -> Canvas {
+    let mut c = Canvas::new(w_pt, h_pt);
+    let inset = INSET_PT * SCALE;
+    let plot_w = c.w - 2 * inset;
+    let slot_w = plot_w / slots as u32;
+    let gap = SCALE;
+    let mid = (c.h / 2) as i32;
+    let half = (mid - SCALE as i32) as f32;
+    c.rect(inset as i32, mid, plot_w, 1, rgbs[0], BASE_ALPHA);
+    let peak = hist
+        .iter()
+        .flat_map(|r| r.iter().copied())
+        .fold(NET_FLOOR, f32::max);
+    let start = slots.saturating_sub(hist.len());
+    for (i, [down, up]) in hist.iter().enumerate() {
+        let x = (inset + (start + i) as u32 * slot_w) as i32;
+        let dh = ((down / peak).clamp(0.0, 1.0) * half).round() as i32;
+        let uh = ((up / peak).clamp(0.0, 1.0) * half).round() as i32;
+        c.rect(x, mid - dh, slot_w - gap, dh as u32, rgbs[0], 255);
+        c.rect(x, mid + 1, slot_w - gap, uh as u32, rgbs[1], 255);
+    }
+    c
+}
+
 /// One wide bar per core with a faint full-height track behind it.
 pub fn graph_cores(cores: &[f32], w_pt: u32, h_pt: u32, rgb: [u8; 3]) -> Canvas {
     let mut c = Canvas::new(w_pt, h_pt);
@@ -240,6 +291,20 @@ mod tests {
         assert_eq!(bytes_short(12_900_000_000), "12G");
         assert_eq!(bytes_short(9_800_000_000), "9.1G");
         assert_eq!(bytes_short(512 * 1024 * 1024), "512M");
+    }
+
+    #[test]
+    fn rate_units() {
+        assert_eq!(rate(0), "0.00 MB/s");
+        assert_eq!(rate(1536 * 1024), "1.50 MB/s");
+        assert_eq!(mb(30 * 1024 * 1024), "30.0");
+        assert_eq!(mb(250 * 1024 * 1024), " 250");
+    }
+
+    #[test]
+    fn updown_graph_size() {
+        let g = graph_updown(&[[0.0, 0.0], [5e6, 1e5]], 60, 300, 40, [[0, 255, 65]; 2]);
+        assert_eq!((g.w, g.h), (600, 80));
     }
 
     #[test]

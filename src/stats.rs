@@ -1,9 +1,10 @@
-//! Periodic sampling of CPU, memory and disk into a plain Snapshot, with short history.
+//! Periodic sampling of CPU, memory, disk and network into a plain Snapshot, with short history.
 
 use std::collections::VecDeque;
 use std::path::Path;
+use std::time::Instant;
 
-use sysinfo::{Disks, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Disks, Networks, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::mac::{self, Pressure, VmStat};
 
@@ -28,6 +29,16 @@ impl DiskInfo {
     }
 }
 
+/// One network interface: current rates in bytes/s and totals since boot.
+#[derive(Debug, Clone)]
+pub struct NetIface {
+    pub name: String,
+    pub rx: u64,
+    pub tx: u64,
+    pub total_rx: u64,
+    pub total_tx: u64,
+}
+
 /// One of the busiest processes by CPU.
 #[derive(Debug, Clone)]
 pub struct TopProc {
@@ -43,6 +54,9 @@ pub const HIST: usize = 60;
 
 /// Memory split as fractions of total: [app, wired, compressed].
 pub type MemFrac = [f32; 3];
+
+/// Network rate sample in bytes/s: [download, upload].
+pub type NetRate = [f32; 2];
 
 /// Everything the menu renders, captured at one instant.
 #[derive(Debug, Clone, Default)]
@@ -60,6 +74,12 @@ pub struct Snapshot {
     pub uptime_secs: u64,
     pub cpu_hist: Vec<f32>,
     pub mem_hist: Vec<MemFrac>,
+    pub net_rx: u64,
+    pub net_tx: u64,
+    pub net_total_rx: u64,
+    pub net_total_tx: u64,
+    pub nets: Vec<NetIface>,
+    pub net_hist: Vec<NetRate>,
 }
 
 impl Snapshot {
@@ -79,7 +99,13 @@ pub struct Sampler {
     tick: u64,
     cpu_hist: VecDeque<f32>,
     mem_hist: VecDeque<MemFrac>,
+    networks: Networks,
+    last_net: Instant,
+    net_hist: VecDeque<NetRate>,
 }
+
+/// Interfaces under this many bytes since boot are summed but not listed.
+const NET_LIST_MIN: u64 = 16 * 1024 * 1024;
 
 /// Disk list is re-scanned only every Nth tick; sizes refresh every tick.
 const DISK_RESCAN_EVERY: u64 = 5;
@@ -96,6 +122,9 @@ impl Sampler {
             tick: 0,
             cpu_hist: VecDeque::with_capacity(HIST),
             mem_hist: VecDeque::with_capacity(HIST),
+            networks: Networks::new_with_refreshed_list(),
+            last_net: Instant::now(),
+            net_hist: VecDeque::with_capacity(HIST),
         }
     }
 
@@ -111,6 +140,17 @@ impl Sampler {
                 d.refresh();
             }
         }
+        // Interfaces come and go (VPN, hotspot), so drop vanished ones on rescan ticks.
+        self.networks.refresh(self.tick % DISK_RESCAN_EVERY == 1);
+        let now = Instant::now();
+        let secs = now.duration_since(self.last_net).as_secs_f64().max(0.001);
+        self.last_net = now;
+        let mut nets = collect_nets(&self.networks, secs);
+        let sum = |f: fn(&NetIface) -> u64| nets.iter().map(f).sum::<u64>();
+        let (net_rx, net_tx) = (sum(|n| n.rx), sum(|n| n.tx));
+        let (net_total_rx, net_total_tx) = (sum(|n| n.total_rx), sum(|n| n.total_tx));
+        nets.retain(|n| n.total_rx + n.total_tx >= NET_LIST_MIN);
+        push_capped(&mut self.net_hist, [net_rx as f32, net_tx as f32]);
         let la = System::load_average();
         let vm_raw = mac::vm_stat();
         let vm = vm_raw.unwrap_or_else(|| fallback_vm(&self.sys));
@@ -139,6 +179,12 @@ impl Sampler {
             uptime_secs: System::uptime(),
             cpu_hist: self.cpu_hist.iter().copied().collect(),
             mem_hist: self.mem_hist.iter().copied().collect(),
+            net_rx,
+            net_tx,
+            net_total_rx,
+            net_total_tx,
+            nets,
+            net_hist: self.net_hist.iter().copied().collect(),
         }
     }
 }
@@ -215,6 +261,39 @@ fn collect_disks(disks: &Disks) -> Vec<DiskInfo> {
     out
 }
 
+/// Physical-ish interfaces that have carried traffic, most bytes since boot first.
+fn collect_nets(networks: &Networks, secs: f64) -> Vec<NetIface> {
+    let rate = |b: u64| (b as f64 / secs).round() as u64;
+    let mut out: Vec<NetIface> = networks
+        .list()
+        .iter()
+        .filter(|(name, d)| {
+            is_counted_iface(name) && d.total_received() + d.total_transmitted() > 0
+        })
+        .map(|(name, d)| NetIface {
+            name: name.clone(),
+            rx: rate(d.received()),
+            tx: rate(d.transmitted()),
+            total_rx: d.total_received(),
+            total_tx: d.total_transmitted(),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        (b.total_rx + b.total_tx)
+            .cmp(&(a.total_rx + a.total_tx))
+            .then(a.name.cmp(&b.name))
+    });
+    out
+}
+
+/// Skip loopback and tunnels/bridges whose bytes are already counted on en*.
+fn is_counted_iface(name: &str) -> bool {
+    const SKIP: [&str; 12] = [
+        "lo", "utun", "awdl", "llw", "bridge", "gif", "stf", "anpi", "anri", "ap", "nan", "vmenet",
+    ];
+    !SKIP.iter().any(|p| name.starts_with(p))
+}
+
 fn is_user_volume(mp: &Path) -> bool {
     if mp == Path::new("/") {
         return true;
@@ -240,6 +319,18 @@ mod tests {
         assert!(!is_user_volume(Path::new("/Volumes/Backup/sub")));
         assert!(!is_user_volume(Path::new("/System/Volumes/Data")));
         assert!(!is_user_volume(Path::new("/private/var/vm")));
+    }
+
+    #[test]
+    fn counted_ifaces() {
+        assert!(is_counted_iface("en0"));
+        assert!(is_counted_iface("en7"));
+        assert!(!is_counted_iface("lo0"));
+        assert!(!is_counted_iface("utun3"));
+        assert!(!is_counted_iface("awdl0"));
+        assert!(!is_counted_iface("bridge100"));
+        assert!(!is_counted_iface("anri0"));
+        assert!(!is_counted_iface("nan0"));
     }
 
     #[test]

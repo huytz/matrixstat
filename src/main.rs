@@ -1,4 +1,4 @@
-//! matrixstat: iStat-style macOS menu bar monitor for CPU cores, memory and disk.
+//! matrixstat: iStat-style macOS menu bar monitor for CPU cores, memory, disk and network.
 
 mod config;
 mod mac;
@@ -75,6 +75,21 @@ fn print_once() {
             d.used_pct()
         );
     }
+    println!(
+        "net ↓ {} ↑ {}  total ↓ {} ↑ {}",
+        render::rate(s.net_rx),
+        render::rate(s.net_tx),
+        render::bytes(s.net_total_rx),
+        render::bytes(s.net_total_tx)
+    );
+    for n in &s.nets {
+        println!(
+            "  if {:<10} ↓ {:>10} ↑ {:>10}",
+            n.name,
+            render::rate(n.rx),
+            render::rate(n.tx)
+        );
+    }
     println!("uptime {}", render::uptime(s.uptime_secs));
 }
 
@@ -103,6 +118,14 @@ fn title_spans(s: &Snapshot, cfg: &Config) -> Vec<(String, Tone)> {
         let pct = d.used_pct() as f32;
         v.push(("SSD ".into(), Tone::Dim));
         v.push((format!("{pct:.0}%"), theme::pct_tone(pct)));
+    }
+    if cfg.net {
+        gap(&mut v);
+        v.push(("↓".into(), Tone::Dim));
+        // Fixed-width MB fields keep the status item from jittering in width.
+        v.push((format!("{}M", render::mb(s.net_rx)), Tone::Bright));
+        v.push((" ↑".into(), Tone::Dim));
+        v.push((format!("{}M", render::mb(s.net_tx)), Tone::Bright));
     }
     v
 }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-28
+
+- Network throughput: `↓rx ↑tx` in fixed MB/s in the menu bar (toggle `Network ↓↑`, key `net`), and a
+  NETWORK section with total rates, mirrored download/upload history, per-interface rows and
+  bytes since boot. Loopback, `utun*`, AWDL, bridges and other virtual interfaces are skipped.
+
 ## 0.1.0 — 2026-10-26
 
 First release.

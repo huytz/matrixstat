@@ -24,9 +24,12 @@ const BAR_CELLS: usize = 10;
 const PH_CPU: &str = "graph:cpu";
 const PH_CORES: &str = "graph:cores";
 const PH_MEM: &str = "graph:mem";
+const PH_NET: &str = "graph:net";
 
 /// Series colours for the stacked memory graph: app, wired, compressed.
 const MEM_SERIES: [Tone; 3] = [Tone::Bright, Tone::Mid, Tone::Dim];
+/// Series colours for the network graph: download, upload.
+const NET_SERIES: [Tone; 2] = [Tone::Bright, Tone::Dim];
 
 type Spans = Vec<(String, Tone)>;
 
@@ -48,12 +51,24 @@ pub struct StatsMenu {
     disk_pos: usize,
     disks: Vec<MenuItem>,
     disk_names: Vec<String>,
+    net_hdr: MenuItem,
+    net_graph: Option<GraphRow>,
+    net_base: usize,
+    nets: Vec<MenuItem>,
+    net_names: Vec<String>,
+    net_total: MenuItem,
     uptime: MenuItem,
     toggles: Vec<(MenuId, &'static str, CheckMenuItem)>,
 }
 
 /// Labels for the menu-bar toggles, same order as config::KEYS.
-const TOGGLE_LABELS: [&str; 4] = ["Core bars", "CPU %", "Memory used", "Disk used"];
+const TOGGLE_LABELS: [&str; 5] = [
+    "Core bars",
+    "CPU %",
+    "Memory used",
+    "Disk used",
+    "Network ↓↑",
+];
 
 /// Info rows are disabled so they neither highlight on hover nor react to clicks.
 fn row() -> MenuItem {
@@ -77,6 +92,16 @@ fn lr(left: Spans, right: Spans) -> Spans {
     out.push((" ".repeat(pad), Tone::Faint));
     out.extend(right);
     out
+}
+
+/// "↓ 1.2 MB/s  ↑ 30.0 KB/s" with arrows in the graph series colours.
+fn updown(rx: &str, tx: &str) -> Spans {
+    vec![
+        span("↓ ", NET_SERIES[0]),
+        span(format!("{rx:>9}"), Tone::Bright),
+        span("  ↑ ", NET_SERIES[1]),
+        span(format!("{tx:>9}"), Tone::Bright),
+    ]
 }
 
 fn span(s: impl Into<String>, t: Tone) -> (String, Tone) {
@@ -133,6 +158,9 @@ impl StatsMenu {
         let mem_rows = [row(), row(), row(), row(), row()];
         let swap = row();
         let pressure = row();
+        let net_hdr = row();
+        let ph_net = MenuItem::new(PH_NET, false, None);
+        let net_total = row();
         let uptime = row();
         let quit = MenuItem::new(
             "Exit the Matrix",
@@ -154,7 +182,7 @@ impl StatsMenu {
         let disk_hdr = row();
         header(&disk_hdr, "DISKS", "", Tone::Dim);
         let seps: Vec<PredefinedMenuItem> =
-            (0..5).map(|_| PredefinedMenuItem::separator()).collect();
+            (0..6).map(|_| PredefinedMenuItem::separator()).collect();
 
         let mut items: Vec<&dyn IsMenuItem> =
             vec![&cpu_hdr, &ph_cpu, &ph_cores, &load, &cores_menu, &seps[0]];
@@ -174,9 +202,14 @@ impl StatsMenu {
         items.push(&disk_hdr);
         let disk_pos = items.len();
         items.push(&seps[3]);
+        items.push(&net_hdr);
+        items.push(&ph_net);
+        let net_base = items.len();
+        items.push(&net_total);
+        items.push(&seps[4]);
         items.push(&uptime);
         items.push(&bar_menu);
-        items.push(&seps[4]);
+        items.push(&seps[5]);
         items.push(&quit);
         menu.append_items(&items).expect("build menu");
 
@@ -185,6 +218,7 @@ impl StatsMenu {
         let cpu_graph = GraphRow::attach(ns, PH_CPU, GRAPH_W, HIST_H);
         let cores_graph = GraphRow::attach(ns, PH_CORES, GRAPH_W, CORES_H);
         let mem_graph = GraphRow::attach(ns, PH_MEM, GRAPH_W, HIST_H);
+        let net_graph = GraphRow::attach(ns, PH_NET, GRAPH_W, HIST_H);
 
         let mut m = Self {
             menu,
@@ -204,6 +238,12 @@ impl StatsMenu {
             disk_pos,
             disks: Vec::new(),
             disk_names: Vec::new(),
+            net_hdr,
+            net_graph,
+            net_base,
+            nets: Vec::new(),
+            net_names: Vec::new(),
+            net_total,
             uptime,
             toggles,
         };
@@ -342,12 +382,70 @@ impl StatsMenu {
 
         // Disks + system
         self.sync_disks(s);
+
+        // Network
+        apply(
+            &self.net_hdr,
+            &lr(
+                vec![span("NETWORK", Tone::Mid)],
+                updown(&render::rate(s.net_rx), &render::rate(s.net_tx)),
+            ),
+        );
+        if let Some(g) = &self.net_graph {
+            g.set(&render::graph_updown(
+                &s.net_hist,
+                HIST,
+                GRAPH_W,
+                HIST_H,
+                [theme::rgb8(NET_SERIES[0]), theme::rgb8(NET_SERIES[1])],
+            ));
+        }
+        self.sync_nets(s);
+        apply(
+            &self.net_total,
+            &lr(
+                vec![span("Since boot", Tone::Faint)],
+                updown(
+                    &render::bytes(s.net_total_rx),
+                    &render::bytes(s.net_total_tx),
+                ),
+            ),
+        );
+
         kv(
             &self.uptime,
             "Uptime",
             &render::uptime(s.uptime_secs),
             Tone::Bright,
         );
+    }
+
+    /// One row per interface; rebuilt only when the set of interfaces changes.
+    fn sync_nets(&mut self, s: &Snapshot) {
+        let mut names: Vec<String> = s.nets.iter().map(|n| n.name.clone()).collect();
+        names.sort();
+        if names != self.net_names {
+            for item in &self.nets {
+                let _ = self.menu.remove(item);
+            }
+            self.nets = s.nets.iter().map(|_| row()).collect();
+            let refs: Vec<&dyn IsMenuItem> =
+                self.nets.iter().map(|i| i as &dyn IsMenuItem).collect();
+            // Disk rows sit above, so the slot shifts by however many there are now.
+            let _ = self
+                .menu
+                .insert_items(&refs, self.net_base + self.disks.len());
+            self.net_names = names;
+        }
+        for (item, n) in self.nets.iter().zip(&s.nets) {
+            apply(
+                item,
+                &lr(
+                    vec![span(render::short_name(&n.name, 12), Tone::Dim)],
+                    updown(&render::rate(n.rx), &render::rate(n.tx)),
+                ),
+            );
+        }
     }
 
     /// Two rows per disk; rebuilt only when the set of mounts changes.

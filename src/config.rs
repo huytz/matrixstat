@@ -9,6 +9,7 @@ pub struct Config {
     pub cpu: bool,
     pub mem: bool,
     pub disk: bool,
+    pub net: bool,
 }
 
 impl Default for Config {
@@ -18,12 +19,13 @@ impl Default for Config {
             cpu: true,
             mem: true,
             disk: true,
+            net: true,
         }
     }
 }
 
 /// Keys as written to disk, in the order the toggles appear.
-pub const KEYS: [&str; 4] = ["icon", "cpu", "mem", "disk"];
+pub const KEYS: [&str; 5] = ["icon", "cpu", "mem", "disk", "net"];
 
 impl Config {
     pub fn get(&self, key: &str) -> bool {
@@ -32,6 +34,7 @@ impl Config {
             "cpu" => self.cpu,
             "mem" => self.mem,
             "disk" => self.disk,
+            "net" => self.net,
             _ => false,
         }
     }
@@ -42,19 +45,20 @@ impl Config {
             "cpu" => self.cpu = on,
             "mem" => self.mem = on,
             "disk" => self.disk = on,
+            "net" => self.net = on,
             _ => {}
         }
     }
 
     /// Never let the status item go blank: with everything off, CPU % comes back.
     pub fn effective(mut self) -> Self {
-        if !(self.icon || self.cpu || self.mem || self.disk) {
+        if !(self.icon || self.cpu || self.mem || self.disk || self.net) {
             self.cpu = true;
         }
         self
     }
 
-    /// Config file wins; otherwise MATRIXSTAT_TITLE (cpu,mem,disk|none) seeds the text parts.
+    /// Config file wins; otherwise MATRIXSTAT_TITLE (cpu,mem,disk,net|none) seeds the text parts.
     pub fn load() -> Self {
         if let Some(cfg) = path()
             .and_then(|p| fs::read_to_string(p).ok())
@@ -67,6 +71,7 @@ impl Config {
             cfg.cpu = false;
             cfg.mem = false;
             cfg.disk = false;
+            cfg.net = false;
             for key in mode.split(',') {
                 cfg.set(key.trim(), true);
             }
@@ -120,6 +125,7 @@ mod tests {
             cpu: false,
             mem: false,
             disk: false,
+            net: false,
         };
         assert!(all_off.effective().cpu);
     }
