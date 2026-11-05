@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.1 — 2026-11-05
+
+- Fix: clicking the menu bar item now opens the dropdown (tray click target tracked the
+  initial zero-width button instead of the styled title).
+
 ## 0.3.0 — 2026-11-05
 
 - Weather: SF Symbol condition icon + temperature with a ℃ symbol, first in the menu bar

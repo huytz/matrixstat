@@ -199,6 +199,11 @@ pub fn style_status(item: &NSStatusItem, spans: &[Span], image: Option<&Canvas>)
     let mtm = MainThreadMarker::new().expect("status item is touched on the main thread");
     if let Some(button) = item.button(mtm) {
         button.setAttributedTitle(&concat_with(spans, BAR_PT, image));
+        // tray-icon's click-catching subview only resizes via its own setters; track the button.
+        let bounds = button.bounds();
+        for v in button.subviews() {
+            v.setFrame(bounds);
+        }
     }
 }
 
