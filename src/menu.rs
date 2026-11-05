@@ -10,6 +10,7 @@ use crate::config::{Config, KEYS};
 use crate::render;
 use crate::stats::{HIST, Snapshot, TOP_N};
 use crate::theme::{self, GraphRow, Span, Tone};
+use crate::weather::Weather;
 
 /// Characters per text row; every row is padded to this so right columns line up.
 const COLS: usize = 40;
@@ -57,17 +58,20 @@ pub struct StatsMenu {
     nets: Vec<MenuItem>,
     net_names: Vec<String>,
     net_total: MenuItem,
+    wx_hdr: MenuItem,
+    wx_rows: [MenuItem; 5],
     uptime: MenuItem,
     toggles: Vec<(MenuId, &'static str, CheckMenuItem)>,
 }
 
 /// Labels for the menu-bar toggles, same order as config::KEYS.
-const TOGGLE_LABELS: [&str; 5] = [
+const TOGGLE_LABELS: [&str; 6] = [
     "Core bars",
     "CPU %",
     "Memory used",
     "Disk used",
     "Network ↓↑",
+    "Weather",
 ];
 
 /// Info rows are disabled so they neither highlight on hover nor react to clicks.
@@ -85,7 +89,14 @@ fn lr(left: Spans, right: Spans) -> Spans {
     let used: usize = left
         .iter()
         .chain(&right)
-        .map(|(s, _)| s.chars().count())
+        .map(|(s, _)| {
+            // An SF Symbol attachment is about two Menlo cells wide.
+            if s.starts_with(theme::SYMBOL) {
+                2
+            } else {
+                s.chars().count()
+            }
+        })
         .sum();
     let pad = COLS.saturating_sub(used).max(1);
     let mut out = left;
@@ -161,6 +172,8 @@ impl StatsMenu {
         let net_hdr = row();
         let ph_net = MenuItem::new(PH_NET, false, None);
         let net_total = row();
+        let wx_hdr = row();
+        let wx_rows = [row(), row(), row(), row(), row()];
         let uptime = row();
         let quit = MenuItem::new(
             "Exit the Matrix",
@@ -182,7 +195,7 @@ impl StatsMenu {
         let disk_hdr = row();
         header(&disk_hdr, "DISKS", "", Tone::Dim);
         let seps: Vec<PredefinedMenuItem> =
-            (0..6).map(|_| PredefinedMenuItem::separator()).collect();
+            (0..7).map(|_| PredefinedMenuItem::separator()).collect();
 
         let mut items: Vec<&dyn IsMenuItem> =
             vec![&cpu_hdr, &ph_cpu, &ph_cores, &load, &cores_menu, &seps[0]];
@@ -207,9 +220,14 @@ impl StatsMenu {
         let net_base = items.len();
         items.push(&net_total);
         items.push(&seps[4]);
+        items.push(&wx_hdr);
+        for r in &wx_rows {
+            items.push(r);
+        }
+        items.push(&seps[5]);
         items.push(&uptime);
         items.push(&bar_menu);
-        items.push(&seps[5]);
+        items.push(&seps[6]);
         items.push(&quit);
         menu.append_items(&items).expect("build menu");
 
@@ -244,11 +262,67 @@ impl StatsMenu {
             nets: Vec::new(),
             net_names: Vec::new(),
             net_total,
+            wx_hdr,
+            wx_rows,
             uptime,
             toggles,
         };
         m.update(snap);
+        m.update_weather(None);
         m
+    }
+
+    /// WEATHER section; rows show a placeholder until the first fetch lands.
+    pub fn update_weather(&self, w: Option<&Weather>) {
+        let Some(w) = w else {
+            header(&self.wx_hdr, "WEATHER", "locating…", Tone::Faint);
+            for r in &self.wx_rows {
+                apply(r, &vec![span("·", Tone::Faint)]);
+            }
+            return;
+        };
+        apply(
+            &self.wx_hdr,
+            &lr(
+                vec![span("WEATHER", Tone::Mid)],
+                vec![
+                    span(w.symbol(), Tone::Bright),
+                    span(format!(" {:.0}", w.temp), Tone::Bright),
+                    span(Weather::CELSIUS, Tone::Bright),
+                ],
+            ),
+        );
+        kv(
+            &self.wx_rows[0],
+            &render::short_name(&w.place, 24),
+            w.label(),
+            Tone::Bright,
+        );
+        kv(
+            &self.wx_rows[1],
+            "Feels like",
+            &format!("{:.0}°C", w.feels),
+            Tone::Bright,
+        );
+        kv(
+            &self.wx_rows[2],
+            "High / Low",
+            &format!("{:.0}° / {:.0}°", w.hi, w.lo),
+            Tone::Bright,
+        );
+        kv(
+            &self.wx_rows[3],
+            "Humidity  Wind",
+            &format!("{:.0}%  {:.0} km/h", w.humidity, w.wind_kmh),
+            Tone::Bright,
+        );
+        let mins = w.at.elapsed().as_secs() / 60;
+        kv(
+            &self.wx_rows[4],
+            "Updated",
+            &format!("{mins} min ago · Open-Meteo"),
+            Tone::Faint,
+        );
     }
 
     /// If `id` is a menu-bar toggle, fold its new state into `cfg` and report true.

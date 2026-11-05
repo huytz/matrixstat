@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Weather: SF Symbol condition icon + temperature with a ℃ symbol, first in the menu bar (toggle
+  `Weather`, key `weather`) and a WEATHER section with place, feels like, high/low, humidity and wind. Location
+  from the public IP (ipinfo.io) or `MATRIXSTAT_LOCATION=lat,lon`; forecast from Open-Meteo every
+  15 min. First network access in matrixstat (`ureq` + `serde_json`).
+- README shows real screenshots (`docs/`) instead of the ASCII mock-up.
+- Core bars are now drawn inline in the status title instead of as the status item image.
+
 ## 0.2.0 — 2026-10-28
 
 - Network throughput: `↓rx ↑tx` in fixed MB/s in the menu bar (toggle `Network ↓↑`, key `net`), and a

@@ -10,6 +10,7 @@ pub struct Config {
     pub mem: bool,
     pub disk: bool,
     pub net: bool,
+    pub weather: bool,
 }
 
 impl Default for Config {
@@ -20,12 +21,13 @@ impl Default for Config {
             mem: true,
             disk: true,
             net: true,
+            weather: true,
         }
     }
 }
 
 /// Keys as written to disk, in the order the toggles appear.
-pub const KEYS: [&str; 5] = ["icon", "cpu", "mem", "disk", "net"];
+pub const KEYS: [&str; 6] = ["icon", "cpu", "mem", "disk", "net", "weather"];
 
 impl Config {
     pub fn get(&self, key: &str) -> bool {
@@ -35,6 +37,7 @@ impl Config {
             "mem" => self.mem,
             "disk" => self.disk,
             "net" => self.net,
+            "weather" => self.weather,
             _ => false,
         }
     }
@@ -46,19 +49,20 @@ impl Config {
             "mem" => self.mem = on,
             "disk" => self.disk = on,
             "net" => self.net = on,
+            "weather" => self.weather = on,
             _ => {}
         }
     }
 
     /// Never let the status item go blank: with everything off, CPU % comes back.
     pub fn effective(mut self) -> Self {
-        if !(self.icon || self.cpu || self.mem || self.disk || self.net) {
+        if !(self.icon || self.cpu || self.mem || self.disk || self.net || self.weather) {
             self.cpu = true;
         }
         self
     }
 
-    /// Config file wins; otherwise MATRIXSTAT_TITLE (cpu,mem,disk,net|none) seeds the text parts.
+    /// Config file wins; else MATRIXSTAT_TITLE (key list or none) seeds the parts.
     pub fn load() -> Self {
         if let Some(cfg) = path()
             .and_then(|p| fs::read_to_string(p).ok())
@@ -72,6 +76,7 @@ impl Config {
             cfg.mem = false;
             cfg.disk = false;
             cfg.net = false;
+            cfg.weather = false;
             for key in mode.split(',') {
                 cfg.set(key.trim(), true);
             }
@@ -126,6 +131,7 @@ mod tests {
             mem: false,
             disk: false,
             net: false,
+            weather: false,
         };
         assert!(all_off.effective().cpu);
     }

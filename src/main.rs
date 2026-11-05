@@ -1,4 +1,4 @@
-//! matrixstat: iStat-style macOS menu bar monitor for CPU cores, memory, disk and network.
+//! matrixstat: iStat-style macOS menu bar monitor: CPU, memory, disk, net, weather.
 
 mod config;
 mod mac;
@@ -6,6 +6,7 @@ mod menu;
 mod render;
 mod stats;
 mod theme;
+mod weather;
 
 use std::time::{Duration, Instant};
 
@@ -19,6 +20,7 @@ use config::Config;
 use menu::StatsMenu;
 use stats::{Sampler, Snapshot};
 use theme::Tone;
+use weather::Weather;
 
 /// Sampling period; iStat defaults to 2s for CPU.
 const INTERVAL: Duration = Duration::from_secs(2);
@@ -33,7 +35,8 @@ fn print_once() {
     // Per-process CPU on macOS needs ~1s between refreshes to be non-zero.
     std::thread::sleep(Duration::from_secs(1));
     let s = sampler.sample();
-    println!("title: {}", title(&s, &Config::load()));
+    let w = weather::fetch();
+    println!("title: {}", title(&s, w.as_ref(), &Config::load()));
     println!(
         "cpu total {:.1}%  load {:.2} {:.2} {:.2}",
         s.cpu_total, s.load[0], s.load[1], s.load[2]
@@ -90,18 +93,45 @@ fn print_once() {
             render::rate(n.tx)
         );
     }
+    match &w {
+        Some(w) => println!(
+            "weather {} {} {:.1}°C feels {:.1}°C  {}  hi {:.0}° lo {:.0}°  humidity {:.0}%  wind {:.0} km/h",
+            w.place,
+            w.icon(),
+            w.temp,
+            w.feels,
+            w.label(),
+            w.hi,
+            w.lo,
+            w.humidity,
+            w.wind_kmh
+        ),
+        None => println!("weather unavailable"),
+    }
     println!("uptime {}", render::uptime(s.uptime_secs));
 }
 
-/// Menu bar text next to the icon, one span per enabled part.
-fn title_spans(s: &Snapshot, cfg: &Config) -> Vec<(String, Tone)> {
+/// Menu bar title, one span per enabled part; weather leads, then the core bars.
+fn title_spans(s: &Snapshot, w: Option<&Weather>, cfg: &Config) -> Vec<(String, Tone)> {
     let mut v: Vec<(String, Tone)> = Vec::new();
     let gap = |v: &mut Vec<(String, Tone)>| {
         if !v.is_empty() {
             v.push(("  ".into(), Tone::Faint));
         }
     };
+    if cfg.weather
+        && let Some(w) = w
+    {
+        v.push((w.symbol().into(), Tone::Bright));
+        v.push((format!(" {:.0}", w.temp), Tone::Bright));
+        v.push((Weather::CELSIUS.into(), Tone::Bright));
+    }
+    if cfg.icon {
+        gap(&mut v);
+        v.push((theme::IMAGE.into(), Tone::Bright));
+    }
     if cfg.cpu {
+        gap(&mut v);
         v.push((format!("{:.0}%", s.cpu_total), theme::pct_tone(s.cpu_total)));
     }
     if cfg.mem {
@@ -131,28 +161,26 @@ fn title_spans(s: &Snapshot, cfg: &Config) -> Vec<(String, Tone)> {
 }
 
 /// Plain-text title for `--once`.
-fn title(s: &Snapshot, cfg: &Config) -> String {
-    title_spans(s, cfg)
+fn title(s: &Snapshot, w: Option<&Weather>, cfg: &Config) -> String {
+    title_spans(s, w, cfg)
         .iter()
-        .map(|(t, _)| t.as_str())
+        .map(|(t, _)| match (t.as_str(), w) {
+            (theme::IMAGE, _) => "",
+            (Weather::CELSIUS, _) => "°C",
+            (t, Some(w)) if t.starts_with(theme::SYMBOL) => w.icon(),
+            (t, _) => t,
+        })
         .collect()
 }
 
-/// Push icon and styled title onto the status item according to the toggles.
-fn set_status(t: &TrayIcon, s: &Snapshot, cfg: &Config) {
+/// Push the styled title, core bars inline, onto the status item per the toggles.
+fn set_status(t: &TrayIcon, s: &Snapshot, w: Option<&Weather>, cfg: &Config) {
     let cfg = cfg.effective();
-    let icon = cfg
-        .icon
-        .then(|| render::core_bars(&s.cores, theme::ICON_RGB));
-    let _ = t.set_icon(icon);
     if let Some(item) = t.ns_status_item() {
-        let spans = title_spans(s, &cfg);
-        let mut refs: Vec<theme::Span> = Vec::new();
-        if cfg.icon && !spans.is_empty() {
-            refs.push((" ", Tone::Faint));
-        }
-        refs.extend(spans.iter().map(|(t, tone)| (t.as_str(), *tone)));
-        theme::style_status(&item, &refs);
+        let spans = title_spans(s, w, &cfg);
+        let refs: Vec<theme::Span> = spans.iter().map(|(t, tone)| (t.as_str(), *tone)).collect();
+        let bars = render::core_bars(&s.cores, theme::ICON_RGB);
+        theme::style_status(&item, &refs, Some(&bars));
     }
 }
 
@@ -171,6 +199,8 @@ fn main() {
 
     let mut sampler = Sampler::new();
     let mut cfg = Config::load();
+    let weather = weather::spawn();
+    let current = move || weather.lock().unwrap_or_else(|e| e.into_inner()).clone();
     // sysinfo needs two CPU refreshes spaced apart before usage is meaningful.
     std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
 
@@ -190,11 +220,10 @@ fn main() {
                 let m = StatsMenu::build(&snap, &cfg);
                 let t = TrayIconBuilder::new()
                     .with_menu(Box::new(m.menu.clone()))
-                    .with_icon(render::core_bars(&snap.cores, theme::ICON_RGB))
                     .with_tooltip("matrixstat")
                     .build()
                     .expect("create tray icon");
-                set_status(&t, &snap, &cfg);
+                set_status(&t, &snap, None, &cfg);
                 last = Some(snap);
                 tray = Some(t);
                 stats_menu = Some(m);
@@ -203,8 +232,10 @@ fn main() {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                 let snap = sampler.sample();
                 if let (Some(t), Some(m)) = (tray.as_ref(), stats_menu.as_mut()) {
+                    let w = current();
                     m.update(&snap);
-                    set_status(t, &snap, &cfg);
+                    m.update_weather(w.as_ref());
+                    set_status(t, &snap, w.as_ref(), &cfg);
                     ticks += 1;
                     if demo && ticks == 3 {
                         t.show_menu();
@@ -220,7 +251,7 @@ fn main() {
             {
                 cfg.save();
                 if let (Some(t), Some(s)) = (tray.as_ref(), last.as_ref()) {
-                    set_status(t, s, &cfg);
+                    set_status(t, s, current().as_ref(), &cfg);
                 }
             }
             Event::UserEvent(UserEvent::Menu(e))

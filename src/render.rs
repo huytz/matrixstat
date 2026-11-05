@@ -1,7 +1,5 @@
 //! Text and icon rendering helpers for the menu bar.
 
-use tray_icon::Icon;
-
 /// Human-readable bytes with one decimal, binary units like Activity Monitor.
 pub fn bytes(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -86,21 +84,18 @@ pub fn short_name(name: &str, max: usize) -> String {
     format!("{cut}…")
 }
 
-/// Icon canvas is 44px tall = 22pt at 2x, the menu bar maximum tray-icon allows.
-const ICON_H: u32 = 44;
-/// Bars occupy the middle 32px (16pt) so they sit like iStat's graphs.
-const BAR_TOP: u32 = 6;
+/// Bars are 32px (16pt at 2x) tall so they sit like iStat's graphs.
 const BAR_H: u32 = 32;
 const BAR_W: u32 = 3;
 const GAP: u32 = 1;
 /// Faint track alpha behind each bar; fill is fully opaque.
 const TRACK_ALPHA: u8 = 64;
 
-/// Per-core vertical bars in one solid colour on a transparent canvas.
-pub fn core_bars(cores: &[f32], rgb: [u8; 3]) -> Icon {
+/// Per-core vertical bars in one solid colour on a transparent 2x canvas.
+pub fn core_bars(cores: &[f32], rgb: [u8; 3]) -> Canvas {
     let n = cores.len().max(1) as u32;
     let w = n * BAR_W + (n - 1) * GAP;
-    let mut px = vec![0u8; (w * ICON_H * 4) as usize];
+    let mut px = vec![0u8; (w * BAR_H * 4) as usize];
     let mut put = |x: u32, y: u32, a: u8| {
         let i = ((y * w + x) * 4) as usize;
         px[i..i + 3].copy_from_slice(&rgb);
@@ -117,11 +112,11 @@ pub fn core_bars(cores: &[f32], rgb: [u8; 3]) -> Icon {
                 TRACK_ALPHA
             };
             for x in x0..x0 + BAR_W {
-                put(x, BAR_TOP + y, a);
+                put(x, y, a);
             }
         }
     }
-    Icon::from_rgba(px, w, ICON_H).expect("valid rgba icon")
+    Canvas { w, h: BAR_H, px }
 }
 
 /// 8-bit RGBA canvas at 2x scale; everything in it is drawn in pixels, not points.
@@ -343,8 +338,8 @@ mod tests {
     fn icon_dimensions() {
         let n = 10usize;
         let w = n as u32 * BAR_W + (n as u32 - 1) * GAP;
-        let icon = core_bars(&vec![50.0; n], [0, 255, 65]);
-        drop(icon);
+        let c = core_bars(&vec![50.0; n], [0, 255, 65]);
+        assert_eq!((c.w, c.h), (w, BAR_H));
         assert_eq!(w, 39);
     }
 }

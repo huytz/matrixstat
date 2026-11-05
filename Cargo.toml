@@ -3,11 +3,12 @@ name = "matrixstat"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
-description = "Matrix-themed macOS menu bar system monitor: CPU cores, memory, disk"
+description = "Matrix-themed macOS menu bar system monitor: CPU cores, memory, disk, network, weather"
 license = "MIT"
 repository = "https://github.com/huytz/matrixstat"
 homepage = "https://github.com/huytz/matrixstat"
 readme = "README.md"
+exclude = ["docs/"]
 keywords = ["macos", "menubar", "monitor", "sysinfo", "matrix"]
 categories = ["command-line-utilities", "os::macos-apis"]
 authors = ["huytz"]
@@ -19,11 +20,14 @@ tao = "0.37"
 libc = "0.2"
 objc2 = "0.6"
 png = "0.18"
+ureq = "3"
+serde_json = "1"
 objc2-foundation = { version = "0.3", features = ["NSAttributedString", "NSData", "NSDictionary", "NSGeometry", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = [
   "std", "NSAppearance", "NSAttributedString", "NSButton", "NSCell", "NSColor", "NSControl",
-  "NSFont", "NSImage", "NSImageCell", "NSImageView", "NSMenu", "NSMenuItem", "NSResponder",
-  "NSStatusBarButton", "NSStatusItem", "NSView",
+  "NSFont", "NSFontDescriptor", "NSImage", "NSImageCell", "NSImageView", "NSMenu", "NSMenuItem", "NSResponder",
+  "NSStatusBarButton", "NSStatusItem", "NSTextAttachment", "NSView",
+  "objc2-core-foundation",
 ] }
 
 [profile.release]

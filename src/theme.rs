@@ -6,9 +6,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua, NSColor, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSImageView, NSMenu,
-    NSStatusItem,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameDarkAqua,
+    NSAttributedStringAttachmentConveniences, NSColor, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSImage, NSImageSymbolConfiguration, NSImageView, NSMenu,
+    NSStatusItem, NSTextAttachment,
 };
 use objc2_foundation::{
     NSAttributedString, NSAttributedStringKey, NSData, NSDictionary, NSMutableAttributedString,
@@ -51,8 +52,13 @@ pub const ICON_RGB: [u8; 3] = [0x00, 0xFF, 0x41];
 const MENU_PT: f64 = 12.0;
 const BAR_PT: f64 = 11.0;
 
-/// One styled run of text.
+/// One styled run of text; text "sf:<name>" renders that SF Symbol instead.
 pub type Span<'a> = (&'a str, Tone);
+
+/// Prefix marking a span as an SF Symbol name.
+pub const SYMBOL: &str = "sf:";
+/// Span text marking where the status bar's canvas image goes.
+pub const IMAGE: &str = "img:";
 
 fn font(pt: f64) -> Retained<NSFont> {
     NSFont::fontWithName_size(&NSString::from_str("Menlo"), pt)
@@ -80,10 +86,63 @@ fn attributed(text: &str, tone: Tone, pt: f64) -> Retained<NSAttributedString> {
     }
 }
 
+/// SF Symbol as an inline attachment, tinted in hierarchical shades of `tone`.
+fn symbol(name: &str, tone: Tone, pt: f64) -> Option<Retained<NSAttributedString>> {
+    let (r, g, b) = rgb(tone);
+    let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0);
+    let cfg = NSImageSymbolConfiguration::configurationWithPointSize_weight(pt, 0.0)
+        .configurationByApplyingConfiguration(
+            &NSImageSymbolConfiguration::configurationWithHierarchicalColor(&color),
+        );
+    let img = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str(name),
+        None,
+    )?
+    .imageWithSymbolConfiguration(&cfg)?;
+    let size = img.size();
+    let att = NSTextAttachment::new();
+    att.setImage(Some(&img));
+    // Centre the glyph on the cap height rather than the baseline.
+    let y = (font(pt).capHeight() - size.height) / 2.0;
+    att.setBounds(NSRect::new(NSPoint::new(0.0, y), size));
+    Some(NSAttributedString::attributedStringWithAttachment(&att))
+}
+
+/// 2x canvas as an inline attachment, vertically centred like `symbol`.
+fn picture(canvas: &Canvas, pt: f64) -> Option<Retained<NSAttributedString>> {
+    let data = NSData::with_bytes(&canvas.to_png());
+    let img = NSImage::initWithData(NSImage::alloc(), &data)?;
+    let size = NSSize::new(canvas.w as f64 / 2.0, canvas.h as f64 / 2.0);
+    img.setSize(size);
+    let att = NSTextAttachment::new();
+    att.setImage(Some(&img));
+    let y = (font(pt).capHeight() - size.height) / 2.0;
+    att.setBounds(NSRect::new(NSPoint::new(0.0, y), size));
+    Some(NSAttributedString::attributedStringWithAttachment(&att))
+}
+
 fn concat(spans: &[Span], pt: f64) -> Retained<NSMutableAttributedString> {
+    concat_with(spans, pt, None)
+}
+
+fn concat_with(
+    spans: &[Span],
+    pt: f64,
+    image: Option<&Canvas>,
+) -> Retained<NSMutableAttributedString> {
     let out = NSMutableAttributedString::new();
     for (text, tone) in spans {
-        out.appendAttributedString(&attributed(text, *tone, pt));
+        let part = if *text == IMAGE {
+            image.and_then(|c| picture(c, pt))
+        } else {
+            text.strip_prefix(SYMBOL)
+                .and_then(|name| symbol(name, *tone, pt))
+        };
+        if let Some(p) = part {
+            out.appendAttributedString(&p);
+        } else if *text != IMAGE {
+            out.appendAttributedString(&attributed(text, *tone, pt));
+        }
     }
     out
 }
@@ -135,11 +194,11 @@ impl GraphRow {
     }
 }
 
-/// Styled text next to the icon in the menu bar.
-pub fn style_status(item: &NSStatusItem, spans: &[Span]) {
+/// Menu bar title; an IMAGE span is replaced by `image` (the core bars).
+pub fn style_status(item: &NSStatusItem, spans: &[Span], image: Option<&Canvas>) {
     let mtm = MainThreadMarker::new().expect("status item is touched on the main thread");
     if let Some(button) = item.button(mtm) {
-        button.setAttributedTitle(&concat(spans, BAR_PT));
+        button.setAttributedTitle(&concat_with(spans, BAR_PT, image));
     }
 }
 
