@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "os::macos-apis"]
 authors = ["huytz"]
 
 [dependencies]
-sysinfo = "0.39"
+sysinfo = "0.40"
 tray-icon = "0.26"
 tao = "0.37"
 libc = "0.2"
